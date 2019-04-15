@@ -1,0 +1,114 @@
+From 030044671486225b355a57fd43cf984f702a5253 Mon Sep 17 00:00:00 2001
+From: Kevin McCarthy <kevin@8t8.us>
+Date: Tue, 9 Apr 2019 18:54:20 -0700
+Subject: [PATCH 5/5] Rename to mutt_rfc1524_expand_filename().
+
+Now that all callers pass a BUFFER, the buffer prefix is not needed to
+distinguish the parameter.
+---
+ attach.c  | 18 +++++++++---------
+ handler.c |  2 +-
+ rfc1524.c |  6 +++---
+ rfc1524.h |  2 +-
+ 4 files changed, 14 insertions(+), 14 deletions(-)
+
+diff --git a/attach.c b/attach.c
+index 9c2189d0..e443694b 100644
+--- a/attach.c
++++ b/attach.c
+@@ -59,7 +59,7 @@ int mutt_get_tmp_attachment (BODY *a)
+ 
+   snprintf(type, sizeof(type), "%s/%s", TYPE(a), a->subtype);
+   rfc1524_mailcap_lookup(a, type, entry, 0);
+-  mutt_buffer_rfc1524_expand_filename (entry->nametemplate, a->filename, tempfile);
++  mutt_rfc1524_expand_filename (entry->nametemplate, a->filename, tempfile);
+ 
+   rfc1524_free_entry(&entry);
+ 
+@@ -112,8 +112,8 @@ int mutt_compose_attachment (BODY *a)
+       else
+ 	mutt_buffer_strcpy (command, entry->composecommand);
+ 
+-      if (mutt_buffer_rfc1524_expand_filename (entry->nametemplate,
+-                                               a->filename, newfile))
++      if (mutt_rfc1524_expand_filename (entry->nametemplate,
++                                        a->filename, newfile))
+       {
+ 	dprint(1, (debugfile, "oldfile: %s\t newfile: %s\n",
+                    a->filename, mutt_b2s (newfile)));
+@@ -248,8 +248,8 @@ int mutt_edit_attachment (BODY *a)
+     {
+ 
+       mutt_buffer_strcpy (command, entry->editcommand);
+-      if (mutt_buffer_rfc1524_expand_filename (entry->nametemplate,
+-                                               a->filename, newfile))
++      if (mutt_rfc1524_expand_filename (entry->nametemplate,
++                                        a->filename, newfile))
+       {
+ 	dprint(1, (debugfile, "oldfile: %s\t newfile: %s\n",
+                    a->filename, mutt_b2s (newfile)));
+@@ -412,8 +412,8 @@ int mutt_view_attachment (FILE *fp, BODY *a, int flag, HEADER *hdr,
+     else
+       fname = a->filename;
+ 
+-    if (mutt_buffer_rfc1524_expand_filename (entry->nametemplate, fname,
+-                                             tempfile))
++    if (mutt_rfc1524_expand_filename (entry->nametemplate, fname,
++                                      tempfile))
+     {
+       if (fp == NULL && mutt_strcmp(mutt_b2s (tempfile), a->filename))
+       {
+@@ -950,8 +950,8 @@ int mutt_print_attachment (FILE *fp, BODY *a)
+ 
+     entry = rfc1524_new_entry ();
+     rfc1524_mailcap_lookup (a, type, entry, MUTT_PRINT);
+-    if (mutt_buffer_rfc1524_expand_filename (entry->nametemplate, a->filename,
+-                                             newfile))
++    if (mutt_rfc1524_expand_filename (entry->nametemplate, a->filename,
++                                      newfile))
+     {
+       if (!fp)
+       {
+diff --git a/handler.c b/handler.c
+index e4f6b2f8..b8ebe175 100644
+--- a/handler.c
++++ b/handler.c
+@@ -1324,7 +1324,7 @@ static int autoview_handler (BODY *a, STATE *s)
+ 
+   fname = safe_strdup (a->filename);
+   mutt_sanitize_filename (fname, 1);
+-  mutt_buffer_rfc1524_expand_filename (entry->nametemplate, fname, tempfile);
++  mutt_rfc1524_expand_filename (entry->nametemplate, fname, tempfile);
+   FREE (&fname);
+ 
+   if (entry->command)
+diff --git a/rfc1524.c b/rfc1524.c
+index 37d21d68..e70be51b 100644
+--- a/rfc1524.c
++++ b/rfc1524.c
+@@ -464,9 +464,9 @@ int rfc1524_mailcap_lookup (BODY *a, char *type, rfc1524_entry *entry, int opt)
+  * Returns 0 if oldfile is fine as is.
+  * Returns 1 if newfile specified
+  */
+-int mutt_buffer_rfc1524_expand_filename (const char *nametemplate,
+-                                         const char *oldfile,
+-                                         BUFFER *newfile)
++int mutt_rfc1524_expand_filename (const char *nametemplate,
++                                  const char *oldfile,
++                                  BUFFER *newfile)
+ {
+   int i, j, k, ps;
+   char *s;
+diff --git a/rfc1524.h b/rfc1524.h
+index 4bf62230..cd15e4f1 100644
+--- a/rfc1524.h
++++ b/rfc1524.h
+@@ -37,7 +37,7 @@ typedef struct rfc1524_mailcap_entry {
+ rfc1524_entry *rfc1524_new_entry (void);
+ void rfc1524_free_entry (rfc1524_entry **);
+ int rfc1524_expand_command (BODY *, const char *, const char *, char *, int);
+-int mutt_buffer_rfc1524_expand_filename (const char *, const char *, BUFFER *);
++int mutt_rfc1524_expand_filename (const char *, const char *, BUFFER *);
+ int rfc1524_mailcap_lookup (BODY *, char *, rfc1524_entry *, int);
+ int mutt_rename_file (const char *, const char *);
+ 

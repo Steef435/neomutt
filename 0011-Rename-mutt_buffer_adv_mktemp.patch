@@ -1,0 +1,135 @@
+From 205ac654e2a49ab1e7c40a846a527d8ccb41c2b2 Mon Sep 17 00:00:00 2001
+From: Kevin McCarthy <kevin@8t8.us>
+Date: Sun, 14 Apr 2019 10:46:36 -0700
+Subject: [PATCH 2/2] Rename mutt_buffer_adv_mktemp().
+
+Remove buffer prefix since all callers now use this version.
+---
+ attach.c   |  2 +-
+ muttlib.c  | 43 ++++++++-----------------------------------
+ postpone.c |  2 +-
+ protos.h   |  3 +--
+ rfc1524.c  |  2 +-
+ 5 files changed, 12 insertions(+), 40 deletions(-)
+
+diff --git a/attach.c b/attach.c
+index e443694b..b2eb7789 100644
+--- a/attach.c
++++ b/attach.c
+@@ -451,7 +451,7 @@ int mutt_view_attachment (FILE *fp, BODY *a, int flag, HEADER *hdr,
+     {
+       /* recv case */
+       mutt_buffer_strcpy (pagerfile, a->filename);
+-      mutt_buffer_adv_mktemp (pagerfile);
++      mutt_adv_mktemp (pagerfile);
+     }
+     else
+       mutt_buffer_mktemp (pagerfile);
+diff --git a/muttlib.c b/muttlib.c
+index d7444c57..e611bc98 100644
+--- a/muttlib.c
++++ b/muttlib.c
+@@ -56,7 +56,13 @@ BODY *mutt_new_body (void)
+   return (p);
+ }
+ 
+-void mutt_buffer_adv_mktemp (BUFFER *buf)
++/* Modified by blong to accept a "suggestion" for file name.  If
++ * that file exists, then construct one with unique name but
++ * keep any extension.  This might fail, I guess.
++ * Renamed to mutt_adv_mktemp so I only have to change where it's
++ * called, and not all possible cases.
++ */
++void mutt_adv_mktemp (BUFFER *buf)
+ {
+   BUFFER *prefix = NULL;
+   char *suffix;
+@@ -87,39 +93,6 @@ void mutt_buffer_adv_mktemp (BUFFER *buf)
+   }
+ }
+ 
+-/* Modified by blong to accept a "suggestion" for file name.  If
+- * that file exists, then construct one with unique name but
+- * keep any extension.  This might fail, I guess.
+- * Renamed to mutt_adv_mktemp so I only have to change where it's
+- * called, and not all possible cases.
+- */
+-void mutt_adv_mktemp (char *s, size_t l)
+-{
+-  char prefix[_POSIX_PATH_MAX];
+-  char *suffix;
+-  struct stat sb;
+-
+-  if (s[0] == '\0')
+-  {
+-    mutt_mktemp (s, l);
+-  }
+-  else
+-  {
+-    strfcpy (prefix, s, sizeof (prefix));
+-    mutt_sanitize_filename (prefix, 1);
+-    snprintf (s, l, "%s/%s", NONULL (Tempdir), prefix);
+-    if (lstat (s, &sb) == -1 && errno == ENOENT)
+-      return;
+-
+-    if ((suffix = strrchr (prefix, '.')) != NULL)
+-    {
+-      *suffix = 0;
+-      ++suffix;
+-    }
+-    mutt_mktemp_pfx_sfx (s, l, prefix, suffix);
+-  }
+-}
+-
+ /* create a send-mode duplicate from a receive-mode body */
+ 
+ int mutt_copy_body (FILE *fp, BODY **tgt, BODY *src)
+@@ -141,7 +114,7 @@ int mutt_copy_body (FILE *fp, BODY **tgt, BODY *src)
+     use_disp = 0;
+   }
+ 
+-  mutt_buffer_adv_mktemp (tmp);
++  mutt_adv_mktemp (tmp);
+   if (mutt_save_attachment (fp, src, mutt_b2s (tmp), 0, NULL) == -1)
+   {
+     mutt_buffer_pool_release (&tmp);
+diff --git a/postpone.c b/postpone.c
+index 3c8109ff..cdae2d0d 100644
+--- a/postpone.c
++++ b/postpone.c
+@@ -696,7 +696,7 @@ int mutt_prepare_template (FILE *fp, CONTEXT *ctx, HEADER *newhdr, HEADER *hdr,
+       mutt_delete_parameter ("x-mutt-noconv", &b->parameter);
+     }
+ 
+-    mutt_buffer_adv_mktemp (file);
++    mutt_adv_mktemp (file);
+     if ((s.fpout = safe_fopen (mutt_b2s (file), "w")) == NULL)
+       goto bail;
+ 
+diff --git a/protos.h b/protos.h
+index 05899e24..b906e0cc 100644
+--- a/protos.h
++++ b/protos.h
+@@ -161,8 +161,7 @@ REGEXP *mutt_compile_regexp (const char *, int);
+ 
+ void mutt_account_hook (const char* url);
+ void mutt_add_to_reference_headers (ENVELOPE *env, ENVELOPE *curenv, LIST ***pp, LIST ***qq);
+-void mutt_buffer_adv_mktemp (BUFFER *);
+-void mutt_adv_mktemp (char *, size_t);
++void mutt_adv_mktemp (BUFFER *);
+ void mutt_alias_menu (char *, size_t, ALIAS *);
+ void mutt_allow_interrupt (int);
+ void mutt_auto_subscribe (const char *);
+diff --git a/rfc1524.c b/rfc1524.c
+index e70be51b..1ef5c452 100644
+--- a/rfc1524.c
++++ b/rfc1524.c
+@@ -571,7 +571,7 @@ int mutt_rfc1524_expand_filename (const char *nametemplate,
+     }
+   }
+ 
+-  mutt_buffer_adv_mktemp (newfile);
++  mutt_adv_mktemp (newfile);
+ 
+   if (rmatch && lmatch)
+     return 0;

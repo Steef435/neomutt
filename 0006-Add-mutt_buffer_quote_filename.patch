@@ -1,0 +1,368 @@
+From 78ff38d6eb2d7a40ee4c77829b268ce13fd6fd7e Mon Sep 17 00:00:00 2001
+From: Kevin McCarthy <kevin@8t8.us>
+Date: Tue, 9 Apr 2019 14:04:36 -0700
+Subject: [PATCH 2/5] Add mutt_buffer_quote_filename().
+
+Convert almost all the callers to use the new function.  alias.c usage
+is a bit involved, so leave that for now.
+
+Remove unneeded index while converting from mutt_quote_filename().
+---
+ muttlib.c   | 25 +++++++++++++++++++++++++
+ mx.c        | 37 +++++++++++++++++++++++--------------
+ pgpinvoke.c | 27 ++++++++++++++++++---------
+ protos.h    |  1 +
+ remailer.c  |  9 ++++++---
+ rfc1524.c   | 29 +++++++++++++++++++----------
+ smime.c     | 26 +++++++++++++++++---------
+ 7 files changed, 109 insertions(+), 45 deletions(-)
+
+diff --git a/muttlib.c b/muttlib.c
+index 4c8a94a8..b3fc9bba 100644
+--- a/muttlib.c
++++ b/muttlib.c
+@@ -1025,6 +1025,31 @@ void mutt_pretty_size (char *s, size_t len, LOFF_T n)
+   }
+ }
+ 
++void mutt_buffer_quote_filename (BUFFER *d, const char *f)
++{
++  mutt_buffer_clear (d);
++
++  if (!f)
++    return;
++
++  mutt_buffer_addch (d, '\'');
++
++  for (; *f; f++)
++  {
++    if (*f == '\'' || *f == '`')
++    {
++      mutt_buffer_addch (d, '\'');
++      mutt_buffer_addch (d, '\\');
++      mutt_buffer_addch (d, *f);
++      mutt_buffer_addch (d, '\'');
++    }
++    else
++      mutt_buffer_addch (d, *f);
++  }
++
++  mutt_buffer_addch (d, '\'');
++}
++
+ void mutt_expand_file_fmt (char *dest, size_t destlen, const char *fmt, const char *src)
+ {
+   char tmp[LONG_STRING];
+diff --git a/mx.c b/mx.c
+index 7bba6370..472e8ee3 100644
+--- a/mx.c
++++ b/mx.c
+@@ -105,27 +105,36 @@ struct mx_ops* mx_get_ops (int magic)
+ 
+ static int invoke_dotlock (const char *path, int dummy, int flags, int retry)
+ {
+-  char cmd[LONG_STRING + _POSIX_PATH_MAX];
+-  char f[SHORT_STRING + _POSIX_PATH_MAX];
++  BUFFER *cmd = NULL;
++  BUFFER *f = NULL;
+   char r[SHORT_STRING];
++  int rc;
++
++  cmd = mutt_buffer_pool_get ();
++  f = mutt_buffer_pool_get ();
+ 
+   if (flags & DL_FL_RETRY)
+     snprintf (r, sizeof (r), "-r %d ", retry ? MAXLOCKATTEMPT : 0);
+ 
+-  mutt_quote_filename (f, sizeof (f), path);
++  mutt_buffer_quote_filename (f, path);
++
++  mutt_buffer_printf (cmd,
++                      "%s %s%s%s%s%s%s%s",
++                      NONULL (MuttDotlock),
++                      flags & DL_FL_TRY ? "-t " : "",
++                      flags & DL_FL_UNLOCK ? "-u " : "",
++                      flags & DL_FL_USEPRIV ? "-p " : "",
++                      flags & DL_FL_FORCE ? "-f " : "",
++                      flags & DL_FL_UNLINK ? "-d " : "",
++                      flags & DL_FL_RETRY ? r : "",
++                      mutt_b2s (f));
+ 
+-  snprintf (cmd, sizeof (cmd),
+-	    "%s %s%s%s%s%s%s%s",
+-	    NONULL (MuttDotlock),
+-	    flags & DL_FL_TRY ? "-t " : "",
+-	    flags & DL_FL_UNLOCK ? "-u " : "",
+-	    flags & DL_FL_USEPRIV ? "-p " : "",
+-	    flags & DL_FL_FORCE ? "-f " : "",
+-	    flags & DL_FL_UNLINK ? "-d " : "",
+-	    flags & DL_FL_RETRY ? r : "",
+-	    f);
++  rc = mutt_system (mutt_b2s (cmd));
+ 
+-  return mutt_system (cmd);
++  mutt_buffer_pool_release (&cmd);
++  mutt_buffer_pool_release (&f);
++
++  return rc;
+ }
+ 
+ #else
+diff --git a/pgpinvoke.c b/pgpinvoke.c
+index bbfb927b..c1ae7e39 100644
+--- a/pgpinvoke.c
++++ b/pgpinvoke.c
+@@ -263,14 +263,16 @@ pid_t pgp_invoke_traditional (FILE **pgpin, FILE **pgpout, FILE **pgperr,
+ 
+ void pgp_invoke_import (const char *fname)
+ {
+-  char _fname[_POSIX_PATH_MAX + SHORT_STRING];
++  BUFFER *fnamebuf = NULL;
+   char cmd[HUGE_STRING];
+   struct pgp_command_context cctx;
+ 
++  fnamebuf = mutt_buffer_pool_get ();
++
+   memset (&cctx, 0, sizeof (cctx));
+ 
+-  mutt_quote_filename (_fname, sizeof (_fname), fname);
+-  cctx.fname = _fname;
++  mutt_buffer_quote_filename (fnamebuf, fname);
++  cctx.fname = mutt_b2s (fnamebuf);
+   if (PgpSignAs && *PgpSignAs)
+     cctx.signas	       = PgpSignAs;
+   else
+@@ -278,11 +280,13 @@ void pgp_invoke_import (const char *fname)
+ 
+   mutt_pgp_command (cmd, sizeof (cmd), &cctx, PgpImportCommand);
+   mutt_system (cmd);
++
++  mutt_buffer_pool_release (&fnamebuf);
+ }
+ 
+ void pgp_invoke_getkeys (ADDRESS *addr)
+ {
+-  char buff[LONG_STRING];
++  BUFFER *buff = NULL;
+   char tmp[LONG_STRING];
+   char cmd[HUGE_STRING];
+   int devnull;
+@@ -293,6 +297,7 @@ void pgp_invoke_getkeys (ADDRESS *addr)
+ 
+   if (!PgpGetkeysCommand) return;
+ 
++  buff = mutt_buffer_pool_get ();
+   memset (&cctx, 0, sizeof (cctx));
+ 
+   personal = addr->personal;
+@@ -301,11 +306,11 @@ void pgp_invoke_getkeys (ADDRESS *addr)
+   *tmp = '\0';
+   mutt_addrlist_to_local (addr);
+   rfc822_write_address_single (tmp, sizeof (tmp), addr, 0);
+-  mutt_quote_filename (buff, sizeof (buff), tmp);
++  mutt_buffer_quote_filename (buff, tmp);
+ 
+   addr->personal = personal;
+ 
+-  cctx.ids = buff;
++  cctx.ids = mutt_b2s (buff);
+ 
+   mutt_pgp_command (cmd, sizeof (cmd), &cctx, PgpGetkeysCommand);
+ 
+@@ -318,6 +323,8 @@ void pgp_invoke_getkeys (ADDRESS *addr)
+   if (!isendwin ()) mutt_clear_error ();
+ 
+   close (devnull);
++
++  mutt_buffer_pool_release (&buff);
+ }
+ 
+ pid_t pgp_invoke_export (FILE **pgpin, FILE **pgpout, FILE **pgperr,
+@@ -343,15 +350,16 @@ pid_t pgp_invoke_list_keys (FILE **pgpin, FILE **pgpout, FILE **pgperr,
+ 			    pgp_ring_t keyring, LIST *hints)
+ {
+   BUFFER *uids;
+-  char quoted[HUGE_STRING];
++  BUFFER *quoted;
+   pid_t rc;
+ 
+   uids = mutt_buffer_pool_get ();
++  quoted = mutt_buffer_pool_get ();
+ 
+   for (; hints; hints = hints->next)
+   {
+-    mutt_quote_filename (quoted, sizeof (quoted), (char *) hints->data);
+-    mutt_buffer_addstr (uids, quoted);
++    mutt_buffer_quote_filename (quoted, (char *) hints->data);
++    mutt_buffer_addstr (uids, mutt_b2s (quoted));
+     if (hints->next)
+       mutt_buffer_addch (uids, ' ');
+   }
+@@ -362,5 +370,6 @@ pid_t pgp_invoke_list_keys (FILE **pgpin, FILE **pgpout, FILE **pgperr,
+                    PgpListPubringCommand);
+ 
+   mutt_buffer_pool_release (&uids);
++  mutt_buffer_pool_release (&quoted);
+   return rc;
+ }
+diff --git a/protos.h b/protos.h
+index 9db9779e..7c27727d 100644
+--- a/protos.h
++++ b/protos.h
+@@ -173,6 +173,7 @@ int  mutt_bounce_message (FILE *fp, HEADER *, ADDRESS *);
+ void mutt_break_thread (HEADER *);
+ void mutt_browser_cleanup (void);
+ void mutt_buffer_concat_path (BUFFER *, const char *, const char *);
++void mutt_buffer_quote_filename (BUFFER *, const char *);
+ void mutt_canonical_charset (char *, size_t, const char *);
+ void mutt_check_stats(void);
+ int mutt_count_body_parts (CONTEXT *, HEADER *);
+diff --git a/remailer.c b/remailer.c
+index 0306fa50..4450f042 100644
+--- a/remailer.c
++++ b/remailer.c
+@@ -745,17 +745,19 @@ int mix_check_message (HEADER *msg)
+ int mix_send_message (LIST *chain, const char *tempfile)
+ {
+   BUFFER *cmd;
+-  char cd_quoted[STRING];
++  BUFFER *cd_quoted;
+   int i;
+ 
+   cmd = mutt_buffer_pool_get ();
++  cd_quoted = mutt_buffer_pool_get ();
++
+   mutt_buffer_printf (cmd, "cat %s | %s -m ", tempfile, Mixmaster);
+ 
+   for (i = 0; chain; chain = chain->next, i = 1)
+   {
+     mutt_buffer_addstr (cmd, i ? "," : " -l ");
+-    mutt_quote_filename (cd_quoted, sizeof (cd_quoted), (char *) chain->data);
+-    mutt_buffer_addstr (cmd, cd_quoted);
++    mutt_buffer_quote_filename (cd_quoted, (char *) chain->data);
++    mutt_buffer_addstr (cmd, mutt_b2s (cd_quoted));
+   }
+ 
+   if (!option (OPTNOCURSES))
+@@ -772,6 +774,7 @@ int mix_send_message (LIST *chain, const char *tempfile)
+   }
+ 
+   mutt_buffer_pool_release (&cmd);
++  mutt_buffer_pool_release (&cd_quoted);
+   unlink (tempfile);
+   return i;
+ }
+diff --git a/rfc1524.c b/rfc1524.c
+index 165e2c06..cda2b97d 100644
+--- a/rfc1524.c
++++ b/rfc1524.c
+@@ -70,22 +70,26 @@ int mutt_buffer_rfc1524_expand_command (BODY *a, const char *filename, const cha
+ int rfc1524_expand_command (BODY *a, const char *filename, const char *_type,
+                             char *command, int clen)
+ {
+-  int x=0,y=0;
++  int x=0;
+   int needspipe = TRUE;
+-  char buf[LONG_STRING];
++  BUFFER *buf = NULL;
++  BUFFER *quoted = NULL;
+   char type[LONG_STRING];
+ 
++  buf = mutt_buffer_pool_get ();
++  quoted = mutt_buffer_pool_get ();
++
+   strfcpy (type, _type, sizeof (type));
+ 
+   if (option (OPTMAILCAPSANITIZE))
+     mutt_sanitize_filename (type, 0);
+ 
+-  while (x < clen - 1 && command[x] && y < sizeof (buf) - 1)
++  while (x < clen - 1 && command[x])
+   {
+     if (command[x] == '\\')
+     {
+       x++;
+-      buf[y++] = command[x++];
++      mutt_buffer_addch (buf, command[x++]);
+     }
+     else if (command[x] == '%')
+     {
+@@ -113,24 +117,29 @@ int rfc1524_expand_command (BODY *a, const char *filename, const char *_type,
+ 	if (option (OPTMAILCAPSANITIZE))
+ 	  mutt_sanitize_filename (pvalue, 0);
+ 
+-	y += mutt_quote_filename (buf + y, sizeof (buf) - y, pvalue);
++	mutt_buffer_quote_filename (quoted, pvalue);
++        mutt_buffer_addstr (buf, mutt_b2s (quoted));
+       }
+       else if (command[x] == 's' && filename != NULL)
+       {
+-	y += mutt_quote_filename (buf + y, sizeof (buf) - y, filename);
++	mutt_buffer_quote_filename (quoted, filename);
++        mutt_buffer_addstr (buf, mutt_b2s (quoted));
+ 	needspipe = FALSE;
+       }
+       else if (command[x] == 't')
+       {
+-	y += mutt_quote_filename (buf + y, sizeof (buf) - y, type);
++	mutt_buffer_quote_filename (quoted, type);
++        mutt_buffer_addstr (buf, mutt_b2s (quoted));
+       }
+       x++;
+     }
+     else
+-      buf[y++] = command[x++];
++      mutt_buffer_addch (buf, command[x++]);
+   }
+-  buf[y] = '\0';
+-  strfcpy (command, buf, clen);
++  strfcpy (command, mutt_b2s (buf), clen);
++
++  mutt_buffer_pool_release (&buf);
++  mutt_buffer_pool_release (&quoted);
+ 
+   return needspipe;
+ }
+diff --git a/smime.c b/smime.c
+index 8e6e6dbc..c52f68f8 100644
+--- a/smime.c
++++ b/smime.c
+@@ -178,21 +178,29 @@ static const char *_mutt_fmt_smime_command (char *dest,
+     {
+       if (!optional)
+       {
+-	char path[_POSIX_PATH_MAX];
+-	char buf1[LONG_STRING], buf2[LONG_STRING];
++	BUFFER *path, *buf1, *buf2;
+ 	struct stat sb;
+ 
+-	strfcpy (path, NONULL (SmimeCALocation), sizeof (path));
+-	mutt_expand_path (path, sizeof (path));
+-	mutt_quote_filename (buf1, sizeof (buf1), path);
++        path = mutt_buffer_pool_get ();
++        buf1 = mutt_buffer_pool_get ();
++        buf2 = mutt_buffer_pool_get ();
+ 
+-	if (stat (path, &sb) != 0 || !S_ISDIR (sb.st_mode))
+-	  snprintf (buf2, sizeof (buf2), "-CAfile %s", buf1);
++	mutt_buffer_strcpy (path, NONULL (SmimeCALocation));
++	mutt_buffer_expand_path (path);
++	mutt_buffer_quote_filename (buf1, mutt_b2s (path));
++
++	if (stat (mutt_b2s (path), &sb) != 0 ||
++            !S_ISDIR (sb.st_mode))
++	  mutt_buffer_printf (buf2, "-CAfile %s", mutt_b2s (buf1));
+ 	else
+-	  snprintf (buf2, sizeof (buf2), "-CApath %s", buf1);
++	  mutt_buffer_printf (buf2, "-CApath %s", mutt_b2s (buf1));
+ 
+ 	snprintf (fmt, sizeof (fmt), "%%%ss", prefix);
+-	snprintf (dest, destlen, fmt, buf2);
++	snprintf (dest, destlen, fmt, mutt_b2s (buf2));
++
++        mutt_buffer_pool_release (&path);
++        mutt_buffer_pool_release (&buf1);
++        mutt_buffer_pool_release (&buf2);
+       }
+       else if (!SmimeCALocation)
+ 	optional = 0;

@@ -1,0 +1,132 @@
+From 052b7c24814498f820313b0d0b0598fa99338590 Mon Sep 17 00:00:00 2001
+From: Kevin McCarthy <kevin@8t8.us>
+Date: Sun, 14 Apr 2019 09:20:46 -0700
+Subject: [PATCH 1/2] Convert remaining mutt_adv_mktemp() calls to use buffer
+ version.
+
+---
+ muttlib.c  | 19 +++++++++++--------
+ postpone.c | 15 +++++++++------
+ 2 files changed, 20 insertions(+), 14 deletions(-)
+
+diff --git a/muttlib.c b/muttlib.c
+index bd4f7959..d7444c57 100644
+--- a/muttlib.c
++++ b/muttlib.c
+@@ -124,27 +124,29 @@ void mutt_adv_mktemp (char *s, size_t l)
+ 
+ int mutt_copy_body (FILE *fp, BODY **tgt, BODY *src)
+ {
+-  char tmp[_POSIX_PATH_MAX];
++  BUFFER *tmp = NULL;
+   BODY *b;
+-
+   PARAMETER *par, **ppar;
+-
+   short use_disp;
+ 
++  tmp = mutt_buffer_pool_get ();
++
+   if (src->filename)
+   {
+     use_disp = 1;
+-    strfcpy (tmp, src->filename, sizeof (tmp));
++    mutt_buffer_strcpy (tmp, src->filename);
+   }
+   else
+   {
+     use_disp = 0;
+-    tmp[0] = '\0';
+   }
+ 
+-  mutt_adv_mktemp (tmp, sizeof (tmp));
+-  if (mutt_save_attachment (fp, src, tmp, 0, NULL) == -1)
++  mutt_buffer_adv_mktemp (tmp);
++  if (mutt_save_attachment (fp, src, mutt_b2s (tmp), 0, NULL) == -1)
++  {
++    mutt_buffer_pool_release (&tmp);
+     return -1;
++  }
+ 
+   *tgt = mutt_new_body ();
+   b = *tgt;
+@@ -153,7 +155,7 @@ int mutt_copy_body (FILE *fp, BODY **tgt, BODY *src)
+   b->parts = NULL;
+   b->next  = NULL;
+ 
+-  b->filename = safe_strdup (tmp);
++  b->filename = safe_strdup (mutt_b2s (tmp));
+   b->use_disp = use_disp;
+   b->unlink = 1;
+ 
+@@ -187,6 +189,7 @@ int mutt_copy_body (FILE *fp, BODY **tgt, BODY *src)
+ 
+   mutt_stamp_attachment (b);
+ 
++  mutt_buffer_pool_release (&tmp);
+   return 0;
+ }
+ 
+diff --git a/postpone.c b/postpone.c
+index 8e78bade..3c8109ff 100644
+--- a/postpone.c
++++ b/postpone.c
+@@ -550,7 +550,7 @@ int mutt_prepare_template (FILE *fp, CONTEXT *ctx, HEADER *newhdr, HEADER *hdr,
+                            short resend)
+ {
+   MESSAGE *msg = NULL;
+-  char file[_POSIX_PATH_MAX];
++  BUFFER *file = NULL;
+   BODY *b;
+   FILE *bfp;
+   int rv = -1;
+@@ -657,6 +657,8 @@ int mutt_prepare_template (FILE *fp, CONTEXT *ctx, HEADER *newhdr, HEADER *hdr,
+ 
+   s.fpin = bfp;
+ 
++  file = mutt_buffer_pool_get ();
++
+   /* create temporary files for all attachments */
+   for (b = newhdr->content; b; b = b->next)
+   {
+@@ -665,10 +667,10 @@ int mutt_prepare_template (FILE *fp, CONTEXT *ctx, HEADER *newhdr, HEADER *hdr,
+      * mutt_get_tmp_attachment () from muttlib.c
+      */
+ 
+-    file[0] = '\0';
++    mutt_buffer_clear (file);
+     if (b->filename)
+     {
+-      strfcpy (file, b->filename, sizeof (file));
++      mutt_buffer_strcpy (file, b->filename);
+       b->d_filename = safe_strdup (b->filename);
+     }
+     else
+@@ -694,8 +696,8 @@ int mutt_prepare_template (FILE *fp, CONTEXT *ctx, HEADER *newhdr, HEADER *hdr,
+       mutt_delete_parameter ("x-mutt-noconv", &b->parameter);
+     }
+ 
+-    mutt_adv_mktemp (file, sizeof(file));
+-    if ((s.fpout = safe_fopen (file, "w")) == NULL)
++    mutt_buffer_adv_mktemp (file);
++    if ((s.fpout = safe_fopen (mutt_b2s (file), "w")) == NULL)
+       goto bail;
+ 
+ 
+@@ -754,7 +756,7 @@ int mutt_prepare_template (FILE *fp, CONTEXT *ctx, HEADER *newhdr, HEADER *hdr,
+     if (safe_fclose (&s.fpout) != 0)
+       goto bail;
+ 
+-    mutt_str_replace (&b->filename, file);
++    mutt_str_replace (&b->filename, mutt_b2s (file));
+     b->unlink = 1;
+ 
+     mutt_stamp_attachment (b);
+@@ -795,6 +797,7 @@ int mutt_prepare_template (FILE *fp, CONTEXT *ctx, HEADER *newhdr, HEADER *hdr,
+ bail:
+ 
+   /* that's it. */
++  mutt_buffer_pool_release (&file);
+   if (bfp != fp) safe_fclose (&bfp);
+   if (msg) mx_close_message (ctx, &msg);
+ 

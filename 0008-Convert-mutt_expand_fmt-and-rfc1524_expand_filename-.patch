@@ -1,0 +1,244 @@
+From 47d318be7bfb3971ff6db98a869b0fc39d5db7f9 Mon Sep 17 00:00:00 2001
+From: Kevin McCarthy <kevin@8t8.us>
+Date: Tue, 9 Apr 2019 17:52:14 -0700
+Subject: [PATCH 4/5] Convert mutt_expand_fmt() and rfc1524_expand_filename()
+ to BUFFER.
+
+These two functions were tied together and so are converted at the
+same time.
+
+Note that rfc1524_expand_filename() had an off-by-one error for the
+left hand size of the name template.  It was only copying i-1 instead
+of the i characters before %s.
+---
+ muttlib.c | 41 +++++++++++++++--------------------------
+ pattern.c |  4 +---
+ protos.h  |  2 +-
+ rfc1524.c | 50 ++++++++++++++++----------------------------------
+ rfc1524.h |  3 +--
+ 5 files changed, 34 insertions(+), 66 deletions(-)
+
+diff --git a/muttlib.c b/muttlib.c
+index 2ffdaed5..ba17f771 100644
+--- a/muttlib.c
++++ b/muttlib.c
+@@ -1052,62 +1052,51 @@ void mutt_buffer_quote_filename (BUFFER *d, const char *f)
+ 
+ void mutt_expand_file_fmt (BUFFER *dest, const char *fmt, const char *src)
+ {
+-  char tmp[LONG_STRING];
++  BUFFER *tmp;
+ 
+-  mutt_quote_filename (tmp, sizeof (tmp), src);
+-  /* TODO: this will be fixed in the next commit */
+-  mutt_expand_fmt (dest->data, dest->dsize, fmt, tmp);
+-  mutt_buffer_fix_dptr (dest);
++  tmp = mutt_buffer_pool_get ();
++  mutt_buffer_quote_filename (tmp, src);
++  mutt_expand_fmt (dest, fmt, mutt_b2s (tmp));
++  mutt_buffer_pool_release (&tmp);
+ }
+ 
+-void mutt_expand_fmt (char *dest, size_t destlen, const char *fmt, const char *src)
++void mutt_expand_fmt (BUFFER *dest, const char *fmt, const char *src)
+ {
+   const char *p;
+-  char *d;
+-  size_t slen;
+   int found = 0;
+ 
+-  slen = mutt_strlen (src);
+-  destlen--;
++  mutt_buffer_clear (dest);
+ 
+-  for (p = fmt, d = dest; destlen && *p; p++)
++  for (p = fmt; *p; p++)
+   {
+     if (*p == '%')
+     {
+       switch (p[1])
+       {
+ 	case '%':
+-	  *d++ = *p++;
+-	  destlen--;
++          mutt_buffer_addch (dest, *p++);
+ 	  break;
+ 	case 's':
+ 	  found = 1;
+-	  strfcpy (d, src, destlen + 1);
+-	  d       += destlen > slen ? slen : destlen;
+-	  destlen -= destlen > slen ? slen : destlen;
++	  mutt_buffer_addstr (dest, src);
+ 	  p++;
+ 	  break;
+ 	default:
+-	  *d++ = *p;
+-	  destlen--;
++	  mutt_buffer_addch (dest, *p);
+ 	  break;
+       }
+     }
+     else
+     {
+-      *d++ = *p;
+-      destlen--;
++      mutt_buffer_addch (dest, *p);
+     }
+   }
+ 
+-  *d = '\0';
+-
+-  if (!found && destlen > 0)
++  if (!found)
+   {
+-    safe_strcat (dest, destlen, " ");
+-    safe_strcat (dest, destlen, src);
++    mutt_buffer_addch (dest, ' ');
++    mutt_buffer_addstr (dest, src);
+   }
+-
+ }
+ 
+ /* return 0 on success, -1 on abort, 1 on error */
+diff --git a/pattern.c b/pattern.c
+index 91f4ef31..d0bfd9d5 100644
+--- a/pattern.c
++++ b/pattern.c
+@@ -1479,9 +1479,7 @@ void mutt_check_simple (BUFFER *s, const char *simple)
+     {
+       tmp = mutt_buffer_pool_get ();
+       quote_simple (tmp, mutt_b2s (s));
+-      /* TODO: this will be fixed in the set of commits. */
+-      mutt_expand_fmt (s->data, s->dsize, simple, mutt_b2s (tmp));
+-      mutt_buffer_fix_dptr (s);
++      mutt_expand_fmt (s, simple, mutt_b2s (tmp));
+       mutt_buffer_pool_release (&tmp);
+     }
+   }
+diff --git a/protos.h b/protos.h
+index 396c7810..05899e24 100644
+--- a/protos.h
++++ b/protos.h
+@@ -206,7 +206,7 @@ void mutt_error_history_display (void);
+ void mutt_error_history_init (void);
+ void mutt_expand_aliases_env (ENVELOPE *);
+ void mutt_expand_file_fmt (BUFFER *, const char *, const char *);
+-void mutt_expand_fmt (char *, size_t, const char *, const char *);
++void mutt_expand_fmt (BUFFER *, const char *, const char *);
+ void mutt_expand_link (char *, const char *, const char *);
+ void mutt_fix_reply_recipients (ENVELOPE *env);
+ void mutt_folder_hook (const char *);
+diff --git a/rfc1524.c b/rfc1524.c
+index cda2b97d..37d21d68 100644
+--- a/rfc1524.c
++++ b/rfc1524.c
+@@ -464,39 +464,17 @@ int rfc1524_mailcap_lookup (BODY *a, char *type, rfc1524_entry *entry, int opt)
+  * Returns 0 if oldfile is fine as is.
+  * Returns 1 if newfile specified
+  */
+-
+-static void strnfcpy(char *d, const char *s, size_t siz, size_t len)
+-{
+-  if (len > siz)
+-    len = siz - 1;
+-  strfcpy(d, s, len);
+-}
+-
+ int mutt_buffer_rfc1524_expand_filename (const char *nametemplate,
+                                          const char *oldfile,
+                                          BUFFER *newfile)
+-{
+-  int rc;
+-
+-  mutt_buffer_increase_size (newfile, LONG_STRING);
+-  rc = rfc1524_expand_filename (nametemplate, oldfile, newfile->data, newfile->dsize);
+-  mutt_buffer_fix_dptr (newfile);
+-
+-  return rc;
+-}
+-
+-int rfc1524_expand_filename (const char *nametemplate,
+-			     const char *oldfile,
+-			     char *newfile,
+-			     size_t nflen)
+ {
+   int i, j, k, ps;
+   char *s;
+   short lmatch = 0, rmatch = 0;
+-  char left[_POSIX_PATH_MAX];
+-  char right[_POSIX_PATH_MAX];
++  BUFFER *left = NULL;
++  BUFFER *right = NULL;
+ 
+-  newfile[0] = 0;
++  mutt_buffer_clear (newfile);
+ 
+   /* first, ignore leading path components.
+    */
+@@ -510,11 +488,11 @@ int rfc1524_expand_filename (const char *nametemplate,
+   if (!nametemplate)
+   {
+     if (oldfile)
+-      strfcpy (newfile, oldfile, nflen);
++      mutt_buffer_strcpy (newfile, oldfile);
+   }
+   else if (!oldfile)
+   {
+-    mutt_expand_fmt (newfile, nflen, nametemplate, "mutt");
++    mutt_expand_fmt (newfile, nametemplate, "mutt");
+   }
+   else /* oldfile && nametemplate */
+   {
+@@ -574,22 +552,26 @@ int rfc1524_expand_filename (const char *nametemplate,
+       if (k >= i + 2)
+ 	rmatch = 0;
+ 
+-      if (lmatch) *left = 0;
+-      else strnfcpy(left, nametemplate, sizeof(left), i);
++      left = mutt_buffer_pool_get ();
++      right = mutt_buffer_pool_get ();
+ 
+-      if (rmatch) *right = 0;
+-      else strfcpy(right, nametemplate + i + 2, sizeof(right));
++      if (!lmatch)
++        mutt_buffer_strcpy_n (left, nametemplate, i);
++      if (!rmatch)
++        mutt_buffer_strcpy (right, nametemplate + i + 2);
++      mutt_buffer_printf (newfile, "%s%s%s", mutt_b2s (left), oldfile, mutt_b2s (right));
+ 
+-      snprintf(newfile, nflen, "%s%s%s", left, oldfile, right);
++      mutt_buffer_pool_release (&left);
++      mutt_buffer_pool_release (&right);
+     }
+     else
+     {
+       /* no "%s" in the name template. */
+-      strfcpy(newfile, nametemplate, nflen);
++      mutt_buffer_strcpy (newfile, nametemplate);
+     }
+   }
+ 
+-  mutt_adv_mktemp(newfile, nflen);
++  mutt_buffer_adv_mktemp (newfile);
+ 
+   if (rmatch && lmatch)
+     return 0;
+diff --git a/rfc1524.h b/rfc1524.h
+index b63a59ac..4bf62230 100644
+--- a/rfc1524.h
++++ b/rfc1524.h
+@@ -37,13 +37,12 @@ typedef struct rfc1524_mailcap_entry {
+ rfc1524_entry *rfc1524_new_entry (void);
+ void rfc1524_free_entry (rfc1524_entry **);
+ int rfc1524_expand_command (BODY *, const char *, const char *, char *, int);
+-int rfc1524_expand_filename (const char *, const char *, char *, size_t);
++int mutt_buffer_rfc1524_expand_filename (const char *, const char *, BUFFER *);
+ int rfc1524_mailcap_lookup (BODY *, char *, rfc1524_entry *, int);
+ int mutt_rename_file (const char *, const char *);
+ 
+ 
+ /* Temporary BUFFER transition functions */
+ int mutt_buffer_rfc1524_expand_command (BODY *, const char *, const char *, BUFFER *);
+-int mutt_buffer_rfc1524_expand_filename (const char *, const char *, BUFFER *);
+ 
+ #endif /* _RFC1524_H */

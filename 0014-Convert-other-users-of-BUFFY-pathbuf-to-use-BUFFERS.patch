@@ -1,0 +1,324 @@
+From 940bdaa1455829a1a5b0c6db05010c4dfc7d3dfe Mon Sep 17 00:00:00 2001
+From: Kevin McCarthy <kevin@8t8.us>
+Date: Tue, 16 Apr 2019 18:11:35 -0700
+Subject: [PATCH 14/16] Convert other users of BUFFY->pathbuf to use BUFFERS.
+
+A few functions in browser.c, buffy.c, and monitor.c were using
+BUFFY->pathbuf but were potentially truncating via fixed size buffers.
+Convert those to use BUFFERS too.
+
+buffy_get() was creating epath and expanding it, apparently to match
+against expanded BUFFY list entries, was wasn't using the epath.  I
+believe this is a bug, and have switched the comparison to epath.
+---
+ browser.c | 14 ++++++++------
+ buffy.c   | 41 ++++++++++++++++++++++++---------------
+ monitor.c | 58 ++++++++++++++++++++++++++++++++++++++++++++-----------
+ 3 files changed, 80 insertions(+), 33 deletions(-)
+
+diff --git a/browser.c b/browser.c
+index cc976307..973e17ae 100644
+--- a/browser.c
++++ b/browser.c
+@@ -526,14 +526,15 @@ static int examine_directory (MUTTMENU *menu, struct browser_state *state,
+ static int examine_mailboxes (MUTTMENU *menu, struct browser_state *state)
+ {
+   struct stat s;
+-  char buffer[LONG_STRING];
+   BUFFY *tmp = Incoming;
++  BUFFER *mailbox = NULL;
+   BUFFER *md = NULL;
+ 
+   if (!Incoming)
+     return (-1);
+   mutt_buffy_check (0);
+ 
++  mailbox = mutt_buffer_pool_get ();
+   md = mutt_buffer_pool_get ();
+   init_state (state, menu);
+ 
+@@ -546,21 +547,21 @@ static int examine_mailboxes (MUTTMENU *menu, struct browser_state *state)
+       tmp->msg_unread = Context->unread;
+     }
+ 
+-    strfcpy (buffer, mutt_b2s (tmp->pathbuf), sizeof (buffer));
++    mutt_buffer_strcpy (mailbox, mutt_b2s (tmp->pathbuf));
+     if (option (OPTBROWSERABBRMAILBOXES))
+-      mutt_pretty_mailbox (buffer, sizeof (buffer));
++      mutt_buffer_pretty_mailbox (mailbox);
+ 
+ #ifdef USE_IMAP
+     if (mx_is_imap (mutt_b2s (tmp->pathbuf)))
+     {
+-      add_folder (menu, state, buffer, NULL, tmp);
++      add_folder (menu, state, mutt_b2s (mailbox), NULL, tmp);
+       continue;
+     }
+ #endif
+ #ifdef USE_POP
+     if (mx_is_pop (mutt_b2s (tmp->pathbuf)))
+     {
+-      add_folder (menu, state, buffer, NULL, tmp);
++      add_folder (menu, state, mutt_b2s (mailbox), NULL, tmp);
+       continue;
+     }
+ #endif
+@@ -585,11 +586,12 @@ static int examine_mailboxes (MUTTMENU *menu, struct browser_state *state)
+ 	s.st_mtime = st2.st_mtime;
+     }
+ 
+-    add_folder (menu, state, buffer, &s, tmp);
++    add_folder (menu, state, mutt_b2s (mailbox), &s, tmp);
+   }
+   while ((tmp = tmp->next));
+   browser_sort (state);
+ 
++  mutt_buffer_pool_release (&mailbox);
+   mutt_buffer_pool_release (&md);
+   return 0;
+ }
+diff --git a/buffy.c b/buffy.c
+index 46d089fb..8a4531e5 100644
+--- a/buffy.c
++++ b/buffy.c
+@@ -659,13 +659,15 @@ int mutt_buffy_check (int force)
+ int mutt_buffy_list (void)
+ {
+   BUFFY *tmp;
+-  char path[_POSIX_PATH_MAX];
++  BUFFER *path = NULL;
+   char buffylist[2*STRING];
+   size_t pos = 0;
+   int first = 1;
+ 
+   int have_unnotified = BuffyNotify;
+ 
++  path = mutt_buffer_pool_get ();
++
+   buffylist[0] = 0;
+   pos += strlen (strncat (buffylist, _("New mail in "), sizeof (buffylist) - 1 - pos)); /* __STRNCAT_CHECKED__ */
+   for (tmp = Incoming; tmp; tmp = tmp->next)
+@@ -674,11 +676,11 @@ int mutt_buffy_list (void)
+     if (!tmp->new || (have_unnotified && tmp->notified))
+       continue;
+ 
+-    strfcpy (path, mutt_b2s (tmp->pathbuf), sizeof (path));
+-    mutt_pretty_mailbox (path, sizeof (path));
++    mutt_buffer_strcpy (path, mutt_b2s (tmp->pathbuf));
++    mutt_buffer_pretty_mailbox (path);
+ 
+     if (!first && (MuttMessageWindow->cols >= 7) &&
+-        (pos + strlen (path) >= (size_t)MuttMessageWindow->cols - 7))
++        (pos + mutt_buffer_len (path) >= (size_t)MuttMessageWindow->cols - 7))
+       break;
+ 
+     if (!first)
+@@ -691,23 +693,29 @@ int mutt_buffy_list (void)
+       tmp->notified = 1;
+       BuffyNotify--;
+     }
+-    pos += strlen (strncat(buffylist + pos, path, sizeof(buffylist)-1-pos)); /* __STRNCAT_CHECKED__ */
++    pos += strlen (strncat(buffylist + pos, mutt_b2s (path), sizeof(buffylist)-1-pos)); /* __STRNCAT_CHECKED__ */
+     first = 0;
+   }
+   if (!first && tmp)
+   {
+     strncat (buffylist + pos, ", ...", sizeof (buffylist) - 1 - pos); /* __STRNCAT_CHECKED__ */
+   }
++
++  mutt_buffer_pool_release (&path);
++
+   if (!first)
+   {
+     mutt_message ("%s", buffylist);
+     return (1);
+   }
+-  /* there were no mailboxes needing to be notified, so clean up since
+-   * BuffyNotify has somehow gotten out of sync
+-   */
+-  BuffyNotify = 0;
+-  return (0);
++  else
++  {
++    /* there were no mailboxes needing to be notified, so clean up since
++     * BuffyNotify has somehow gotten out of sync
++     */
++    BuffyNotify = 0;
++    return (0);
++  }
+ }
+ 
+ void mutt_buffy_setnotified (const char *path)
+@@ -790,25 +798,26 @@ void mutt_buffer_buffy (BUFFER *s)
+ static BUFFY* buffy_get (const char *path)
+ {
+   BUFFY *cur;
+-  char *epath;
++  BUFFER *epath;
+ 
+   if (!path)
+     return NULL;
+ 
+-  epath = safe_strdup(path);
+-  mutt_expand_path(epath, mutt_strlen(epath));
++  epath = mutt_buffer_pool_get ();
++  mutt_buffer_strcpy (epath, NONULL (path));
++  mutt_buffer_expand_path (epath);
+ 
+   for (cur = Incoming; cur; cur = cur->next)
+   {
+     /* must be done late because e.g. IMAP delimiter may change */
+     mutt_buffer_expand_path (cur->pathbuf);
+-    if (!mutt_strcmp (mutt_b2s (cur->pathbuf), path))
++    if (!mutt_strcmp (mutt_b2s (cur->pathbuf), mutt_b2s (epath)))
+     {
+-      FREE (&epath);
++      mutt_buffer_pool_release (&epath);
+       return cur;
+     }
+   }
+ 
+-  FREE (&epath);
++  mutt_buffer_pool_release (&epath);
+   return NULL;
+ }
+diff --git a/monitor.c b/monitor.c
+index 79b4341b..fffb1dab 100644
+--- a/monitor.c
++++ b/monitor.c
+@@ -62,7 +62,7 @@ typedef struct monitorinfo_t
+   dev_t st_dev;
+   ino_t st_ino;
+   MONITOR *monitor;
+-  char _pathbuf[_POSIX_PATH_MAX]; /* access via path only (maybe not initialized) */
++  BUFFER *_pathbuf; /* access via path only (maybe not initialized) */
+ }
+ MONITORINFO;
+ 
+@@ -145,6 +145,16 @@ static MONITOR *monitor_create (MONITORINFO *info, int descriptor)
+   return monitor;
+ }
+ 
++static void monitor_info_init (MONITORINFO *info)
++{
++  memset (info, 0, sizeof (MONITORINFO));
++}
++
++static void monitor_info_free (MONITORINFO *info)
++{
++  mutt_buffer_free (&info->_pathbuf);
++}
++
+ static void monitor_delete (MONITOR *monitor)
+ {
+   MONITOR **ptr = &Monitor;
+@@ -350,8 +360,10 @@ static int monitor_resolve (MONITORINFO *info, BUFFY *buffy)
+ 
+   if (fmt)
+   {
+-    snprintf (info->_pathbuf, sizeof(info->_pathbuf), fmt, info->path);
+-    info->path = info->_pathbuf;
++    if (!info->_pathbuf)
++      info->_pathbuf = mutt_buffer_new ();
++    mutt_buffer_printf (info->_pathbuf, fmt, info->path);
++    info->path = mutt_b2s (info->_pathbuf);
+   }
+   if (stat (info->path, &sb) != 0)
+     return RESOLVERES_FAIL_STAT;
+@@ -377,14 +389,17 @@ int mutt_monitor_add (BUFFY *buffy)
+ {
+   MONITORINFO info;
+   uint32_t mask;
+-  int descr;
++  int descr, rc = 0;
++
++  monitor_info_init (&info);
+ 
+   descr = monitor_resolve (&info, buffy);
+   if (descr != RESOLVERES_OK_NOTEXISTING)
+   {
+     if (!buffy && (descr == RESOLVERES_OK_EXISTING))
+       MonitorContextDescriptor = info.monitor->descr;
+-    return descr == RESOLVERES_OK_EXISTING ? 0 : -1;
++    rc = descr == RESOLVERES_OK_EXISTING ? 0 : -1;
++    goto cleanup;
+   }
+ 
+   mask = info.isdir ? INOTIFY_MASK_DIR : INOTIFY_MASK_FILE;
+@@ -392,7 +407,8 @@ int mutt_monitor_add (BUFFY *buffy)
+       || (descr = inotify_add_watch (INotifyFd, info.path, mask)) == -1)
+   {
+     dprint (2, (debugfile, "monitor: inotify_add_watch failed for '%s', errno=%d %s\n", info.path, errno, strerror(errno)));
+-    return -1;
++    rc = -1;
++    goto cleanup;
+   }
+ 
+   dprint (3, (debugfile, "monitor: inotify_add_watch descriptor=%d for '%s'\n", descr, info.path));
+@@ -400,7 +416,10 @@ int mutt_monitor_add (BUFFY *buffy)
+     MonitorContextDescriptor = descr;
+ 
+   monitor_create (&info, descr);
+-  return 0;
++
++cleanup:
++  monitor_info_free (&info);
++  return rc;
+ }
+ 
+ /* mutt_monitor_remove: remove file monitor from BUFFY, or - if NULL - from Context.
+@@ -413,6 +432,10 @@ int mutt_monitor_add (BUFFY *buffy)
+ int mutt_monitor_remove (BUFFY *buffy)
+ {
+   MONITORINFO info, info2;
++  int rc = 0;
++
++  monitor_info_init (&info);
++  monitor_info_init (&info2);
+ 
+   if (!buffy)
+   {
+@@ -421,7 +444,10 @@ int mutt_monitor_remove (BUFFY *buffy)
+   }
+ 
+   if (monitor_resolve (&info, buffy) != RESOLVERES_OK_EXISTING)
+-    return 2;
++  {
++    rc = 2;
++    goto cleanup;
++  }
+ 
+   if (Context)
+   {
+@@ -429,12 +455,18 @@ int mutt_monitor_remove (BUFFY *buffy)
+     {
+       if (monitor_resolve (&info2, NULL) == RESOLVERES_OK_EXISTING
+           && info.st_ino == info2.st_ino && info.st_dev == info2.st_dev)
+-        return 1;
++      {
++        rc = 1;
++        goto cleanup;
++      }
+     }
+     else
+     {
+       if (mutt_find_mailbox (Context->realpath))
+-        return 1;
++      {
++        rc = 1;
++        goto cleanup;
++      }
+     }
+   }
+ 
+@@ -443,5 +475,9 @@ int mutt_monitor_remove (BUFFY *buffy)
+ 
+   monitor_delete (info.monitor);
+   monitor_check_free ();
+-  return 0;
++
++cleanup:
++  monitor_info_free (&info);
++  monitor_info_free (&info2);
++  return rc;
+ }

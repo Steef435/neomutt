@@ -1,0 +1,174 @@
+From 44b897794f4bcd0e0da0aa32ec33857e5cef9471 Mon Sep 17 00:00:00 2001
+From: Kevin McCarthy <kevin@8t8.us>
+Date: Tue, 9 Apr 2019 15:20:51 -0700
+Subject: [PATCH 3/5] Convert mutt_expand_file_fmt() to accept BUFFER dest
+ parameter.
+
+mutt_expand_fmt() will be converted in the next commit, at the same
+time as rfc1524_expand_filename().
+---
+ curs_lib.c | 22 ++++++++++++++--------
+ muttlib.c  |  6 ++++--
+ protos.h   |  2 +-
+ query.c    | 13 ++++++++-----
+ sendlib.c  | 11 +++++++----
+ 5 files changed, 34 insertions(+), 20 deletions(-)
+
+diff --git a/curs_lib.c b/curs_lib.c
+index cb43f9e7..bdf6487f 100644
+--- a/curs_lib.c
++++ b/curs_lib.c
+@@ -260,13 +260,15 @@ void mutt_clear_error (void)
+ 
+ void mutt_edit_file (const char *editor, const char *data)
+ {
+-  char cmd[LONG_STRING];
++  BUFFER *cmd;
++
++  cmd = mutt_buffer_pool_get ();
+ 
+   mutt_endwin (NULL);
+-  mutt_expand_file_fmt (cmd, sizeof (cmd), editor, data);
+-  if (mutt_system (cmd))
++  mutt_expand_file_fmt (cmd, editor, data);
++  if (mutt_system (mutt_b2s (cmd)))
+   {
+-    mutt_error (_("Error running \"%s\"!"), cmd);
++    mutt_error (_("Error running \"%s\"!"), mutt_b2s (cmd));
+     mutt_sleep (2);
+   }
+ #if defined (USE_SLANG_CURSES) || defined (HAVE_RESIZETERM)
+@@ -275,6 +277,8 @@ void mutt_edit_file (const char *editor, const char *data)
+ #endif
+   keypad (stdscr, TRUE);
+   clearok (stdscr, TRUE);
++
++  mutt_buffer_pool_release (&cmd);
+ }
+ 
+ int mutt_yesorno (const char *msg, int def)
+@@ -936,18 +940,20 @@ int mutt_do_pager (const char *banner,
+     rc = mutt_pager (banner, tempfile, do_color, info);
+   else
+   {
+-    char cmd[STRING];
++    BUFFER *cmd = NULL;
+ 
++    cmd = mutt_buffer_pool_get ();
+     mutt_endwin (NULL);
+-    mutt_expand_file_fmt (cmd, sizeof(cmd), Pager, tempfile);
+-    if (mutt_system (cmd) == -1)
++    mutt_expand_file_fmt (cmd, Pager, tempfile);
++    if (mutt_system (mutt_b2s (cmd)) == -1)
+     {
+-      mutt_error (_("Error running \"%s\"!"), cmd);
++      mutt_error (_("Error running \"%s\"!"), mutt_b2s (cmd));
+       rc = -1;
+     }
+     else
+       rc = 0;
+     mutt_unlink (tempfile);
++    mutt_buffer_pool_release (&cmd);
+   }
+ 
+   return rc;
+diff --git a/muttlib.c b/muttlib.c
+index b3fc9bba..2ffdaed5 100644
+--- a/muttlib.c
++++ b/muttlib.c
+@@ -1050,12 +1050,14 @@ void mutt_buffer_quote_filename (BUFFER *d, const char *f)
+   mutt_buffer_addch (d, '\'');
+ }
+ 
+-void mutt_expand_file_fmt (char *dest, size_t destlen, const char *fmt, const char *src)
++void mutt_expand_file_fmt (BUFFER *dest, const char *fmt, const char *src)
+ {
+   char tmp[LONG_STRING];
+ 
+   mutt_quote_filename (tmp, sizeof (tmp), src);
+-  mutt_expand_fmt (dest, destlen, fmt, tmp);
++  /* TODO: this will be fixed in the next commit */
++  mutt_expand_fmt (dest->data, dest->dsize, fmt, tmp);
++  mutt_buffer_fix_dptr (dest);
+ }
+ 
+ void mutt_expand_fmt (char *dest, size_t destlen, const char *fmt, const char *src)
+diff --git a/protos.h b/protos.h
+index 7c27727d..396c7810 100644
+--- a/protos.h
++++ b/protos.h
+@@ -205,7 +205,7 @@ void mutt_enter_command (void);
+ void mutt_error_history_display (void);
+ void mutt_error_history_init (void);
+ void mutt_expand_aliases_env (ENVELOPE *);
+-void mutt_expand_file_fmt (char *, size_t, const char *, const char *);
++void mutt_expand_file_fmt (BUFFER *, const char *, const char *);
+ void mutt_expand_fmt (char *, size_t, const char *, const char *);
+ void mutt_expand_link (char *, const char *, const char *);
+ void mutt_fix_reply_recipients (ENVELOPE *env);
+diff --git a/query.c b/query.c
+index 6299ccfe..87e90286 100644
+--- a/query.c
++++ b/query.c
+@@ -94,7 +94,7 @@ static QUERY *run_query (char *s, int quiet)
+   FILE *fp;
+   QUERY *first = NULL;
+   QUERY *cur = NULL;
+-  char cmd[_POSIX_PATH_MAX];
++  BUFFER *cmd = NULL;
+   char *buf = NULL;
+   size_t buflen;
+   int dummy = 0;
+@@ -102,14 +102,17 @@ static QUERY *run_query (char *s, int quiet)
+   char *p;
+   pid_t thepid;
+ 
++  cmd = mutt_buffer_pool_get ();
++  mutt_expand_file_fmt (cmd, QueryCmd, s);
+ 
+-  mutt_expand_file_fmt (cmd, sizeof(cmd), QueryCmd, s);
+-
+-  if ((thepid = mutt_create_filter (cmd, NULL, &fp, NULL)) < 0)
++  if ((thepid = mutt_create_filter (mutt_b2s (cmd), NULL, &fp, NULL)) < 0)
+   {
+-    dprint (1, (debugfile, "unable to fork command: %s", cmd));
++    dprint (1, (debugfile, "unable to fork command: %s", mutt_b2s (cmd)));
++    mutt_buffer_pool_release (&cmd);
+     return 0;
+   }
++  mutt_buffer_pool_release (&cmd);
++
+   if (!quiet)
+     mutt_message _("Waiting for response...");
+   fgets (msg, sizeof (msg), fp);
+diff --git a/sendlib.c b/sendlib.c
+index 8a772823..984e0528 100644
+--- a/sendlib.c
++++ b/sendlib.c
+@@ -1355,19 +1355,22 @@ BODY *mutt_make_message_attach (CONTEXT *ctx, HEADER *hdr, int attach_msg)
+ static void run_mime_type_query (BODY *att)
+ {
+   FILE *fp, *fperr;
+-  char cmd[HUGE_STRING];
++  BUFFER *cmd = NULL;
+   char *buf = NULL;
+   size_t buflen;
+   int dummy = 0;
+   pid_t thepid;
+ 
+-  mutt_expand_file_fmt (cmd, sizeof(cmd), MimeTypeQueryCmd, att->filename);
++  cmd = mutt_buffer_pool_get ();
++  mutt_expand_file_fmt (cmd, MimeTypeQueryCmd, att->filename);
+ 
+-  if ((thepid = mutt_create_filter (cmd, NULL, &fp, &fperr)) < 0)
++  if ((thepid = mutt_create_filter (mutt_b2s (cmd), NULL, &fp, &fperr)) < 0)
+   {
+-    mutt_error (_("Error running \"%s\"!"), cmd);
++    mutt_error (_("Error running \"%s\"!"), mutt_b2s (cmd));
++    mutt_buffer_pool_release (&cmd);
+     return;
+   }
++  mutt_buffer_pool_release (&cmd);
+ 
+   if ((buf = mutt_read_line (buf, &buflen, fp, &dummy, 0)) != NULL)
+   {

@@ -1,0 +1,96 @@
+From 70ef4e9e1fc231b9f7de455e92864535b8b331d7 Mon Sep 17 00:00:00 2001
+From: Kevin McCarthy <kevin@8t8.us>
+Date: Tue, 16 Apr 2019 19:25:36 -0700
+Subject: [PATCH 15/16] Add mutt_buffer_enter_fname().
+
+---
+ curs_lib.c | 41 ++++++++++++++++++++++++++++++++---------
+ protos.h   |  2 ++
+ 2 files changed, 34 insertions(+), 9 deletions(-)
+
+diff --git a/curs_lib.c b/curs_lib.c
+index bdf6487f..62792d4f 100644
+--- a/curs_lib.c
++++ b/curs_lib.c
+@@ -959,7 +959,24 @@ int mutt_do_pager (const char *banner,
+   return rc;
+ }
+ 
+-int _mutt_enter_fname (const char *prompt, char *buf, size_t blen, int buffy, int multiple, char ***files, int *numfiles)
++int _mutt_enter_fname (const char *prompt, char *buf, size_t blen, int buffy,
++                       int multiple, char ***files, int *numfiles)
++{
++  BUFFER *fname;
++  int rc;
++
++  fname = mutt_buffer_pool_get ();
++
++  mutt_buffer_addstr (fname, NONULL (buf));
++  rc = _mutt_buffer_enter_fname (prompt, fname, buffy, multiple, files, numfiles);
++  strfcpy (buf, mutt_b2s (fname), blen);
++
++  mutt_buffer_pool_release (&fname);
++  return rc;
++}
++
++int _mutt_buffer_enter_fname (const char *prompt, BUFFER *fname, int buffy,
++                              int multiple, char ***files, int *numfiles)
+ {
+   event_t ch;
+ 
+@@ -967,8 +984,8 @@ int _mutt_enter_fname (const char *prompt, char *buf, size_t blen, int buffy, in
+   mutt_window_mvaddstr (MuttMessageWindow, 0, 0, (char *) prompt);
+   addstr (_(" ('?' for list): "));
+   NORMAL_COLOR;
+-  if (buf[0])
+-    addstr (buf);
++  if (mutt_buffer_len (fname))
++    addstr (mutt_b2s (fname));
+   mutt_window_clrtoeol (MuttMessageWindow);
+   mutt_refresh ();
+ 
+@@ -984,9 +1001,10 @@ int _mutt_enter_fname (const char *prompt, char *buf, size_t blen, int buffy, in
+   else if (ch.ch == '?')
+   {
+     mutt_refresh ();
+-    buf[0] = 0;
+-    _mutt_select_file (buf, blen, MUTT_SEL_FOLDER | (multiple ? MUTT_SEL_MULTI : 0),
+-		       files, numfiles);
++    mutt_buffer_clear (fname);
++    _mutt_buffer_select_file (fname,
++                              MUTT_SEL_FOLDER | (multiple ? MUTT_SEL_MULTI : 0),
++                              files, numfiles);
+   }
+   else
+   {
+@@ -994,9 +1012,14 @@ int _mutt_enter_fname (const char *prompt, char *buf, size_t blen, int buffy, in
+ 
+     sprintf (pc, "%s: ", prompt);	/* __SPRINTF_CHECKED__ */
+     mutt_unget_event (ch.op ? 0 : ch.ch, ch.op ? ch.op : 0);
+-    if (_mutt_get_field (pc, buf, blen, (buffy ? MUTT_EFILE : MUTT_FILE) | MUTT_CLEAR, multiple, files, numfiles)
+-	!= 0)
+-      buf[0] = 0;
++
++    mutt_buffer_increase_size (fname, LONG_STRING);
++    if (_mutt_get_field (pc, fname->data, fname->dsize,
++                         (buffy ? MUTT_EFILE : MUTT_FILE) | MUTT_CLEAR,
++                         multiple, files, numfiles) != 0)
++      mutt_buffer_clear (fname);
++    else
++      mutt_buffer_fix_dptr (fname);
+     FREE (&pc);
+   }
+ 
+diff --git a/protos.h b/protos.h
+index 1fd25fb4..639fedb5 100644
+--- a/protos.h
++++ b/protos.h
+@@ -322,6 +322,8 @@ int mutt_chscmp (const char *s, const char *chs);
+ int mutt_parent_message (CONTEXT *, HEADER *, int);
+ int mutt_prepare_template(FILE*, CONTEXT *, HEADER *, HEADER *, short);
+ int mutt_resend_message (FILE *, CONTEXT *, HEADER *);
++#define mutt_buffer_enter_fname(A,B,C) _mutt_buffer_enter_fname(A,B,C,0,NULL,NULL)
++int _mutt_buffer_enter_fname (const char *, BUFFER *, int, int, char ***, int *);
+ #define mutt_enter_fname(A,B,C,D) _mutt_enter_fname(A,B,C,D,0,NULL,NULL)
+ int _mutt_enter_fname (const char *, char *, size_t, int, int, char ***, int *);
+ int  mutt_enter_string (char *buf, size_t buflen, int col, int flags);
